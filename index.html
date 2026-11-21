@@ -497,6 +497,9 @@ const viewFilter = view => view === 'all' ? null : m => m.day.id === view;
 const lei = n => n.toLocaleString('ro-RO', {minimumFractionDigits:2, maximumFractionDigits:2}) + ' lei';
 // prețuri și bife se țin pe zile: id = "d1__ceafa", "d2__n-<vot>-d2b"; Totalul le adună
 const DAY_IDS = () => DAYS.map(d => d.id);
+// produse care se cumpără o singură dată, pentru toate zilele
+const STAPLES = ['cafea','ceai','zahar','ulei','mustar','ketchup','miere'];
+const isStaple = k => STAPLES.includes(k);
 const dayOfId = id => id.slice(0, id.indexOf('__'));
 function splitCosts(view){
   const per = {}; let total = 0, unassigned = 0;
@@ -504,6 +507,7 @@ function splitCosts(view){
   for (const [id, amount] of Object.entries(prices)){
     if (!(amount > 0)) continue;
     const day = dayOfId(id); const key = id.slice(id.indexOf('__') + 2);
+    if (day === 'all') continue;                       // date vechi (dinainte de împărțirea pe zile): ignorate
     if (view !== 'all' && day !== view) continue;
     total += amount;
     let weights = [];
@@ -511,7 +515,7 @@ function splitCosts(view){
       const mealId = key.slice(key.lastIndexOf('-') + 1);
       weights = list.filter(v => { const p = v.picks?.[mealId]; return p && p.opt !== 'none'; }).map(v => [v.id, 1]);
     } else if (ING[key]){
-      const f = viewFilter(day);
+      const f = day === 'once' ? null : viewFilter(day);
       weights = list.map(v => [v.id, personQty(v, f)[key] || 0]).filter(([,w]) => w > 0);
     }
     const W = weights.reduce((a,[,w]) => a + w, 0);
@@ -520,7 +524,7 @@ function splitCosts(view){
   }
   return {per, total, unassigned};
 }
-const viewTitle = v => v === 'all' ? 'toată excursia' : `${DAYS.find(d=>d.id===v).title}, ${DAYS.find(d=>d.id===v).date.split(',')[0]}`;
+const viewTitle = v => v === 'all' ? 'toată excursia' : v === 'once' ? 'cumpărate o dată' : `${DAYS.find(d=>d.id===v).title}, ${DAYS.find(d=>d.id===v).date.split(',')[0]}`;
 function renderSplit(){
   const {per, total, unassigned} = splitCosts(shopView);
   $('#splitTitle').textContent = shopView === 'all' ? 'Cine cât dă · total' : `Cine cât dă · ${viewTitle(shopView)}`;
@@ -566,13 +570,19 @@ function shopLines(tot){
 }
 // rândurile listei pentru o vedere: în Total, un produs adună rândurile din fiecare zi
 function shopRows(view){
-  const days = view === 'all' ? DAY_IDS() : [view];
+  const days = view === 'all' ? DAY_IDS() : view === 'once' ? [] : [view];
   const perDay = Object.fromEntries(days.map(d => [d, compute(m => m.day.id === d)]));
-  const tot = compute(view === 'all' ? null : m => m.day.id === view);
+  const tot = compute(view === 'all' || view === 'once' ? null : m => m.day.id === view);
+  for (const k of Object.keys(tot)){
+    if (view === 'once' && !isStaple(k)) delete tot[k];
+    if (view !== 'once' && view !== 'all' && isStaple(k)) delete tot[k];
+  }
   const groups = shopLines(tot).map(g => ({cat:g.cat, rows:g.rows.map(r => {
-    const parts = days.filter(d => perDay[d][r.k] > 0).map(d => ({id:d+'__'+r.k, w:perDay[d][r.k]}));
+    const parts = isStaple(r.k) ? [{id:'once__'+r.k, w:1}]
+      : days.filter(d => perDay[d][r.k] > 0).map(d => ({id:d+'__'+r.k, w:perDay[d][r.k]}));
     return {...r, parts};
   })}));
+  if (view === 'once') return {groups, notes:[]};
   const notes = collectNotes(view === 'all' ? null : m => m.day.id === view)
     .map(n => ({...n, parts:[{id:n.meal.day.id+'__n-'+n.id+'-'+n.meal.id, w:1}]}));
   return {groups, notes};
@@ -584,11 +594,11 @@ function renderShop(){
   if (ae && ae.classList && ae.classList.contains('price')){ shopDirty = true; return; }
   shopDirty = false;
   renderSplit();
-  const views = [{id:'all', n:'Total'}, ...DAYS.map(d => ({id:d.id, n:`${d.title} · ${d.date.split(',')[0]}`}))];
+  const views = [{id:'all', n:'Total'}, ...DAYS.map(d => ({id:d.id, n:`${d.title} · ${d.date.split(',')[0]}`})), {id:'once', n:'O dată, pentru toate zilele'}];
   $('#shopSeg').innerHTML = views.map(v => `<button data-v="${v.id}" class="${shopView===v.id?'on':''}">${esc(v.n)}</button>`).join('');
   const {groups, notes} = shopRows(shopView);
   const nVotes = Object.keys(votes).length;
-  $('#shopSummary').textContent = nVotes ? `Calculat din ${nVotes} ${nVotes===1?'vot':'voturi'}.` + (shopView==='all' ? ' Totalul adună toate zilele.' : '') : '';
+  $('#shopSummary').textContent = nVotes ? `Calculat din ${nVotes} ${nVotes===1?'vot':'voturi'}.` + (shopView==='all' ? ' Totalul adună toate zilele.' : shopView==='once' ? ' Cafeaua, ceaiul, zahărul, uleiul, muștarul, ketchupul și mierea se iau o singură dată, pentru toată excursia (de exemplu sâmbătă).' : ' Cafea, ceai, zahăr, ulei și sosuri sunt la „O dată, pentru toate zilele”.') : '';
   $('#shopList').innerHTML = groups.length ? groups.map(g => `<div class="cat">${esc(g.cat)}</div>
     <table class="shop">${g.rows.map(r => itemRow(r.parts, esc(r.name), `${esc(r.main)}<small>calculat ${esc(r.raw)}</small>`)).join('')}</table>`).join('')
     : `<div class="empty">${nVotes ? 'Nimic de cumpărat pentru ziua asta.' : 'Lista apare după primele voturi.'}</div>`;
